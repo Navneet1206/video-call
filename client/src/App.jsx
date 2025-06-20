@@ -1,35 +1,49 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import React, { useState } from 'react';
+import VideoCall from './VideoCall';
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [inCall, setInCall] = useState(false);
+  const [roomID, setRoomID] = useState('');
+
+  const handleJoin = () => {
+    const trimmed = roomID.trim();
+    if (trimmed) {
+      setInCall(true);
+    } else {
+      alert('Please enter a room ID');
+    }
+  };
+
+  const handleLeaveCall = () => {
+    setInCall(false);
+  };
+
+  if (!inCall) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center bg-gray-100 p-4">
+        <div className="bg-white p-6 rounded-lg shadow-md w-full max-w-md">
+          <h1 className="text-2xl font-semibold mb-4 text-center">Join a Room</h1>
+          <input
+            type="text"
+            placeholder="Enter Room ID (e.g., 1234)"
+            className="w-full border border-gray-300 rounded px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={roomID}
+            onChange={(e) => setRoomID(e.target.value)}
+          />
+          <button
+            onClick={handleJoin}
+            className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition"
+          >
+            Join
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+    <VideoCall roomID={roomID.trim()} onLeave={handleLeaveCall} />
+  );
 }
 
-export default App
+export default App;
