@@ -15,7 +15,7 @@ const io = new Server(server, {
   }
 });
 
-// For health check
+// Health check
 app.get('/', (req, res) => {
   res.send('WebRTC signaling server running');
 });
@@ -36,7 +36,7 @@ io.on('connection', (socket) => {
       socket.join(roomID);
       socket.emit('joined', roomID);
       // Notify both peers they can start negotiation
-      io.to(roomID).emit('ready'); 
+      io.to(roomID).emit('ready');
       console.log(`Socket ${socket.id} joined room ${roomID}`);
     } else {
       // max 2
@@ -60,6 +60,14 @@ io.on('connection', (socket) => {
     socket.to(roomID).emit('ice-candidate', candidate);
   });
 
+  // Forward mute/unmute events
+  socket.on('toggle-audio', ({ enabled, roomID }) => {
+    socket.to(roomID).emit('toggle-audio', enabled);
+  });
+  socket.on('toggle-video', ({ enabled, roomID }) => {
+    socket.to(roomID).emit('toggle-video', enabled);
+  });
+
   socket.on('leave', (roomID) => {
     console.log(`Socket ${socket.id} leaving room ${roomID}`);
     socket.leave(roomID);
@@ -68,9 +76,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
-    // We need to let peers know if someone disconnects; 
-    // Unfortunately socket.io does not automatically tell us which rooms a socket was in easily here,
-    // but we can iterate over socket.rooms. Note: socket.rooms includes the socket.id itself.
+    // Notify peers in all rooms this socket was in
     for (const roomID of socket.rooms) {
       if (roomID === socket.id) continue;
       socket.to(roomID).emit('peer-left');
