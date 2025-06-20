@@ -4,6 +4,18 @@ import VideoCall from './VideoCall';
 function App() {
   const [inCall, setInCall] = useState(false);
   const [roomID, setRoomID] = useState('');
+  const [permissionsGranted, setPermissionsGranted] = useState(false);
+
+  const requestPermissions = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setPermissionsGranted(true);
+      // Stream is not stored here; VideoCall.jsx will request it again
+    } catch (err) {
+      console.error('Permissions denied:', err);
+      alert('Please allow camera and microphone access to join the call.');
+    }
+  };
 
   const handleJoin = () => {
     const trimmed = roomID.trim();
@@ -17,6 +29,23 @@ function App() {
   const handleLeaveCall = () => {
     setInCall(false);
   };
+
+  if (!permissionsGranted) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center bg-gray-100 p-4">
+        <div className="bg-white p-6 rounded-lg shadow-md w-full max-w-md">
+          <h1 className="text-2xl font-semibold mb-4 text-center">Video Call App</h1>
+          <p className="mb-4 text-center">Please allow camera and microphone access to join the call.</p>
+          <button
+            onClick={requestPermissions}
+            className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition"
+          >
+            Allow Camera and Microphone
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!inCall) {
     return (

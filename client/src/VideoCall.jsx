@@ -19,7 +19,6 @@ export default function VideoCall({ roomID, onLeave }) {
 
   const [isCaller, setIsCaller] = useState(false);
   const [peerConnected, setPeerConnected] = useState(false);
-  const [mainIsLocal, setMainIsLocal] = useState(true);
   const [status, setStatus] = useState('Initializing...');
   const localStreamRef = useRef(null);
 
@@ -38,16 +37,14 @@ export default function VideoCall({ roomID, onLeave }) {
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then((stream) => {
         localStreamRef.current = stream;
-        // Attach to local video element
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
         setStatus('Local media ready');
-        // 2. Join room
         socket.emit('join', roomID);
       })
       .catch((err) => {
-        console.error('Error accessing media devices.', err);
+        console.error('Error accessing media devices:', err);
         alert('Could not access camera/microphone: ' + err.message);
       });
 
@@ -98,9 +95,8 @@ export default function VideoCall({ roomID, onLeave }) {
       if (candidate && pcRef.current) {
         try {
           await pcRef.current.addIceCandidate(candidate);
-          // console.log('Added ICE candidate');
         } catch (err) {
-          console.error('Error adding received ICE candidate:', err);
+          console.error('Error adding ICE candidate:', err);
         }
       }
     });
@@ -108,22 +104,16 @@ export default function VideoCall({ roomID, onLeave }) {
       console.log('Peer left');
       setPeerConnected(false);
       setStatus('Peer disconnected. Waiting for someone to join...');
-      // Close existing peer connection:
       if (pcRef.current) {
         pcRef.current.close();
         pcRef.current = null;
       }
-      // Clear remote video
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = null;
       }
-      // Reset peer audio/video flags
       setPeerAudioEnabled(true);
       setPeerVideoEnabled(true);
-      // When a new peer joins, server will emit 'ready' again and negotiation restarts
     });
-
-    // Handle peer toggle events
     socket.on('toggle-audio', (enabled) => {
       console.log('Peer audio toggled:', enabled);
       setPeerAudioEnabled(enabled);
@@ -132,30 +122,24 @@ export default function VideoCall({ roomID, onLeave }) {
       console.log('Peer video toggled:', enabled);
       setPeerVideoEnabled(enabled);
     });
-
     socket.on('disconnect', () => {
       console.log('Socket disconnected');
     });
 
-    // Cleanup on unmount
     return () => {
       cleanupAndLeave();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [roomID]);
 
   const cleanupAndLeave = () => {
-    // Inform peer
     if (socketRef.current) {
       socketRef.current.emit('leave', roomID);
       socketRef.current.disconnect();
     }
-    // Close peer connection
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
     }
-    // Stop local tracks
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
     }
@@ -168,14 +152,12 @@ export default function VideoCall({ roomID, onLeave }) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     pcRef.current = pc;
 
-    // Add local tracks to peer connection
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         pc.addTrack(track, localStreamRef.current);
       });
     }
 
-    // When remote track arrives
     pc.ontrack = (event) => {
       console.log('Remote track received');
       setPeerConnected(true);
@@ -186,7 +168,6 @@ export default function VideoCall({ roomID, onLeave }) {
       setStatus('Connected');
     };
 
-    // ICE candidate handler
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         socketRef.current.emit('ice-candidate', { candidate: event.candidate, roomID });
@@ -195,13 +176,9 @@ export default function VideoCall({ roomID, onLeave }) {
 
     pc.oniceconnectionstatechange = () => {
       console.log('ICE connection state:', pc.iceConnectionState);
-      if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) {
-        // We rely on 'peer-left' event from signaling server to fully clean up
-      }
     };
 
     if (isOfferer) {
-      // Create offer when negotiation is needed
       pc.onnegotiationneeded = async () => {
         console.log('Starting negotiation (offer)...');
         try {
@@ -216,12 +193,6 @@ export default function VideoCall({ roomID, onLeave }) {
     }
   };
 
-  // Toggle main/secondary view
-  const handleToggleMain = () => {
-    setMainIsLocal((prev) => !prev);
-  };
-
-  // Mute/unmute audio
   const handleToggleAudio = () => {
     if (!localStreamRef.current) return;
     const newEnabled = !localAudioEnabled;
@@ -229,13 +200,11 @@ export default function VideoCall({ roomID, onLeave }) {
       track.enabled = newEnabled;
     });
     setLocalAudioEnabled(newEnabled);
-    // Notify peer
     if (socketRef.current) {
       socketRef.current.emit('toggle-audio', { enabled: newEnabled, roomID });
     }
   };
 
-  // Video on/off
   const handleToggleVideo = () => {
     if (!localStreamRef.current) return;
     const newEnabled = !localVideoEnabled;
@@ -243,327 +212,53 @@ export default function VideoCall({ roomID, onLeave }) {
       track.enabled = newEnabled;
     });
     setLocalVideoEnabled(newEnabled);
-    // Notify peer
     if (socketRef.current) {
       socketRef.current.emit('toggle-video', { enabled: newEnabled, roomID });
     }
   };
 
-  // Render a placeholder when remote video is off or not yet available
-  const renderRemoteVideoOrPlaceholder = () => {
-    // If peer not connected yet: show waiting overlay
-    if (!peerConnected) {
-      return (
-        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-          <p className="text-white">Waiting for peer...</p>
-        </div>
-      );
-    }
-    // Peer connected:
-    if (!peerVideoEnabled) {
-      // Show placeholder with camera-off icon
-      return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-70">
-          <VideoOff className="w-12 h-12 text-white mb-2" />
-          <p className="text-white">Camera Off</p>
-        </div>
-      );
-    }
-    // Otherwise no overlay, actual video element is showing
-    return null;
-  };
-
-  // Render a mic-off indicator overlay on remote if peer muted audio
-  const renderRemoteMicIndicator = () => {
-    if (peerConnected && !peerAudioEnabled) {
-      // show a small mic-off icon at bottom-left
-      return (
-        <div className="absolute bottom-1 left-1 bg-gray-800 bg-opacity-60 p-1 rounded-full">
-          <MicOff className="w-4 h-4 text-white" />
-        </div>
-      );
-    }
-    return null;
-  };
-
-  // Similarly, overlay on local video when you mute yourself
-  const renderLocalMicIndicator = () => {
-    if (!localAudioEnabled) {
-      return (
-        <div className="absolute bottom-1 left-1 bg-gray-800 bg-opacity-60 p-1 rounded-full">
-          <MicOff className="w-4 h-4 text-white" />
-        </div>
-      );
-    }
-    return null;
-  };
-
-  // Overlay on local when video off? We can hide local video if disabled, and show placeholder
-  const renderLocalVideoOrPlaceholder = () => {
-    if (!peerConnected) {
-      // Always show local video even if peer not connected, but overlay waiting
-      return (
-        <>
-          <video
-            ref={mainIsLocal ? localVideoRef : remoteVideoRef}
-            autoPlay
-            playsInline
-            muted={mainIsLocal}
-            className="w-full h-full object-cover"
-          />
-          <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-            <p className="text-white">Waiting for peer...</p>
-          </div>
-          {renderLocalMicIndicator()}
-        </>
-      );
-    }
-    // Peer connected
-    if (!localVideoEnabled && mainIsLocal) {
-      // Show placeholder instead of your video in main view
-      return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-70">
-          <VideoOff className="w-12 h-12 text-white mb-2" />
-          <p className="text-white">Camera Off</p>
-          {renderLocalMicIndicator()}
-        </div>
-      );
-    }
-    // Otherwise show your video normally
-    return (
-      <>
-        <video
-          ref={mainIsLocal ? localVideoRef : remoteVideoRef}
-          autoPlay
-          playsInline
-          muted={mainIsLocal}
-          className="w-full h-full object-cover"
-        />
-        { mainIsLocal && renderLocalMicIndicator() }
-      </>
-    );
-  };
-
-  // NOTE: Because our code structure uses same ref for video element based on mainIsLocal,
-  // we handle overlay logic within the JSX below.
-
   return (
     <div className="h-screen flex flex-col bg-gray-900 text-white">
-      <div className="flex-grow relative flex items-center justify-center">
-        {/* Main video container (md+ and small) */}
-        <div
-          className={`bg-black flex items-center justify-center overflow-hidden relative
-            md:flex-grow w-full h-full`}
-        >
-          {/* Decide which video to show in main: local or remote */}
-          {mainIsLocal ? (
-            // Local in main
-            <>
-              <video
-                ref={localVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className={`w-full h-full object-cover ${!localVideoEnabled ? 'hidden' : ''}`}
-              />
-              { /* Overlay placeholder if local video off */ }
-              {peerConnected && !localVideoEnabled && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-70">
-                  <VideoOff className="w-12 h-12 text-white mb-2" />
-                  <p className="text-white">Camera Off</p>
-                </div>
-              )}
-              { /* Waiting overlay until peer connects */ }
-              {!peerConnected && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-                  <p className="text-white">Waiting for peer...</p>
-                </div>
-              )}
-              { renderLocalMicIndicator() }
-            </>
-          ) : (
-            // Remote in main
-            <>
-              {/* If remote video enabled, show video element; else hide it */}
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                muted={false}
-                className={`w-full h-full object-cover ${!peerVideoEnabled ? 'hidden' : ''}`}
-              />
-              {renderRemoteVideoOrPlaceholder()}
-              {renderRemoteMicIndicator()}
-            </>
-          )}
+      <div className="flex-grow relative">
+        {/* Main video (User 01 - Remote) */}
+        <video
+          ref={remoteVideoRef}
+          autoPlay
+          playsInline
+          className="w-full h-full object-cover bg-black"
+        />
+        {/* Overlay video (User 02 - Local) */}
+        <div className="absolute bottom-4 right-4 w-32 h-32 bg-black rounded overflow-hidden">
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+          />
         </div>
-
-        {/* Secondary video overlay on md+ */}
-        <div
-          className={`hidden md:block absolute bottom-20 right-4 bg-black border border-gray-700 rounded overflow-hidden`}
-          style={{ width: '150px', height: '150px' }}
-        >
-          {mainIsLocal ? (
-            // Secondary is remote
-            <>
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                muted={false}
-                className={`w-full h-full object-cover ${!peerVideoEnabled ? 'hidden' : ''}`}
-              />
-              {renderRemoteVideoOrPlaceholder()}
-              {renderRemoteMicIndicator()}
-            </>
-          ) : (
-            // Secondary is local
-            <>
-              <video
-                ref={localVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className={`w-full h-full object-cover ${!localVideoEnabled ? 'hidden' : ''}`}
-              />
-              {peerConnected && !localVideoEnabled && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-70">
-                  <VideoOff className="w-12 h-12 text-white mb-2" />
-                  <p className="text-white">Camera Off</p>
-                </div>
-              )}
-              {!peerConnected && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-                  <p className="text-white">Waiting for peer...</p>
-                </div>
-              )}
-              {renderLocalMicIndicator()}
-            </>
-          )}
-        </div>
-
-        {/* On small screens: stack both videos */}
-        <div className="md:hidden flex flex-col items-center mt-4 space-y-4 w-full px-4">
-          {/* Top box */}
-          <div className="w-full bg-black rounded overflow-hidden relative h-60">
-            {mainIsLocal ? (
-              <>
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className={`w-full h-full object-cover ${!localVideoEnabled ? 'hidden' : ''}`}
-                />
-                {peerConnected && !localVideoEnabled && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-70">
-                    <VideoOff className="w-12 h-12 text-white mb-2" />
-                    <p className="text-white">Camera Off</p>
-                  </div>
-                )}
-                {!peerConnected && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-                    <p className="text-white">Waiting for peer...</p>
-                  </div>
-                )}
-                {renderLocalMicIndicator()}
-              </>
-            ) : (
-              <>
-                <video
-                  ref={remoteVideoRef}
-                  autoPlay
-                  playsInline
-                  muted={false}
-                  className={`w-full h-full object-cover ${!peerVideoEnabled ? 'hidden' : ''}`}
-                />
-                {renderRemoteVideoOrPlaceholder()}
-                {renderRemoteMicIndicator()}
-              </>
-            )}
-          </div>
-          {/* Bottom box */}
-          <div className="w-full bg-black rounded overflow-hidden relative h-60">
-            {mainIsLocal ? (
-              <>
-                <video
-                  ref={remoteVideoRef}
-                  autoPlay
-                  playsInline
-                  muted={false}
-                  className={`w-full h-full object-cover ${!peerVideoEnabled ? 'hidden' : ''}`}
-                />
-                {renderRemoteVideoOrPlaceholder()}
-                {renderRemoteMicIndicator()}
-              </>
-            ) : (
-              <>
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className={`w-full h-full object-cover ${!localVideoEnabled ? 'hidden' : ''}`}
-                />
-                {peerConnected && !localVideoEnabled && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-70">
-                    <VideoOff className="w-12 h-12 text-white mb-2" />
-                    <p className="text-white">Camera Off</p>
-                  </div>
-                )}
-                {!peerConnected && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-                    <p className="text-white">Waiting for peer...</p>
-                  </div>
-                )}
-                {renderLocalMicIndicator()}
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom bar: status, toggle-main, mute/unmute, video on/off, leave */}
-      <div className="bg-gray-800 p-4 flex items-center justify-between">
-        <div className="text-sm break-words">{status}</div>
-        <div className="flex items-center space-x-3">
-          {/* Toggle main/secondary */}
-          <button
-            onClick={handleToggleMain}
-            className="p-2 bg-gray-700 rounded hover:bg-gray-600 transition"
-            title="Toggle main/secondary"
-          >
-            <Repeat className="w-5 h-5 text-white" />
-          </button>
-          {/* Mute/unmute audio */}
+        {/* Navigation buttons */}
+        <div className="absolute bottom-4 left-4 flex space-x-2">
           <button
             onClick={handleToggleAudio}
             className="p-2 bg-gray-700 rounded hover:bg-gray-600 transition"
             title={localAudioEnabled ? "Mute audio" : "Unmute audio"}
           >
-            {localAudioEnabled
-              ? <Mic className="w-5 h-5 text-white" />
-              : <MicOff className="w-5 h-5 text-white" />
-            }
+            {localAudioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
           </button>
-          {/* Video on/off */}
           <button
             onClick={handleToggleVideo}
             className="p-2 bg-gray-700 rounded hover:bg-gray-600 transition"
             title={localVideoEnabled ? "Turn video off" : "Turn video on"}
           >
-            {localVideoEnabled
-              ? <Video className="w-5 h-5 text-white" />
-              : <VideoOff className="w-5 h-5 text-white" />
-            }
+            {localVideoEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
           </button>
-          {/* Leave call */}
           <button
             onClick={cleanupAndLeave}
             className="p-2 bg-red-600 rounded hover:bg-red-500 transition"
             title="Leave call"
           >
-            <PhoneOff className="w-5 h-5 text-white" />
+            <PhoneOff className="w-5 h-5" />
           </button>
         </div>
       </div>
