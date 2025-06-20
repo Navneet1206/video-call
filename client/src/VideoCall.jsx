@@ -1,14 +1,14 @@
 // client/src/VideoCall.jsx
 import React, { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { Repeat, PhoneOff, Mic, MicOff, Video, VideoOff } from 'lucide-react';
+import { PhoneOff, Mic, MicOff, Video, VideoOff } from 'lucide-react';
 
 // Replace with your signaling server URL
 const SIGNALING_SERVER_URL = 'http://localhost:5000'; // or your deployed server
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
-  // Add TURN servers here if available in production
+  // Add TURN servers if available in production
 ];
 
 export default function VideoCall({ roomID, onLeave }) {
@@ -20,35 +20,18 @@ export default function VideoCall({ roomID, onLeave }) {
   const [isCaller, setIsCaller] = useState(false);
   const [peerConnected, setPeerConnected] = useState(false);
   const [status, setStatus] = useState('Initializing...');
-  const localStreamRef = useRef(null);
-
-  // Local audio/video enabled states
-  const [localAudioEnabled, setLocalAudioEnabled] = useState(true);
-  const [localVideoEnabled, setLocalVideoEnabled] = useState(true);
-  // Peer audio/video enabled states (default true until notified)
-  const [peerAudioEnabled, setPeerAudioEnabled] = useState(true);
-  const [peerVideoEnabled, setPeerVideoEnabled] = useState(true);
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [localVideoEnabled, setLocalVideoEnabled] = useState(false);
+  const [localAudioEnabled, setLocalAudioEnabled] = useState(false);
+  const [peerVideoEnabled, setPeerVideoEnabled] = useState(false);
 
   useEffect(() => {
     const socket = io(SIGNALING_SERVER_URL);
     socketRef.current = socket;
 
-    // 1. Get media
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        localStreamRef.current = stream;
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-        setStatus('Local media ready');
-        socket.emit('join', roomID);
-      })
-      .catch((err) => {
-        console.error('Error accessing media devices:', err);
-        alert('Could not access camera/microphone: ' + err.message);
-      });
+    socket.emit('join', roomID);
 
-    // Signaling handlers
     socket.on('created', () => {
       console.log('Created room', roomID);
       setIsCaller(true);
@@ -64,15 +47,13 @@ export default function VideoCall({ roomID, onLeave }) {
       cleanupAndLeave();
     });
     socket.on('ready', () => {
-      console.log('Both peers present, start WebRTC');
+      console.log('Both peers present, starting WebRTC');
       setStatus('Establishing connection...');
-      createPeerConnection(isCaller);
+      createPeerConnection();
     });
     socket.on('offer', async (offer) => {
       console.log('Received offer');
-      if (!pcRef.current) {
-        createPeerConnection(false);
-      }
+      if (!pcRef.current) createPeerConnection();
       try {
         await pcRef.current.setRemoteDescription(offer);
         const answer = await pcRef.current.createAnswer();
@@ -88,7 +69,7 @@ export default function VideoCall({ roomID, onLeave }) {
       try {
         await pcRef.current.setRemoteDescription(answer);
       } catch (err) {
-        console.error('Error setting remote description from answer:', err);
+        console.error('Error setting remote description:', err);
       }
     });
     socket.on('ice-candidate', async (candidate) => {
@@ -108,30 +89,18 @@ export default function VideoCall({ roomID, onLeave }) {
         pcRef.current.close();
         pcRef.current = null;
       }
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
-      }
-      setPeerAudioEnabled(true);
-      setPeerVideoEnabled(true);
-    });
-    socket.on('toggle-audio', (enabled) => {
-      console.log('Peer audio toggled:', enabled);
-      setPeerAudioEnabled(enabled);
-    });
-    socket.on('toggle-video', (enabled) => {
-      console.log('Peer video toggled:', enabled);
-      setPeerVideoEnabled(enabled);
+      setRemoteStream(null);
+      setPeerVideoEnabled(false);
     });
     socket.on('disconnect', () => {
       console.log('Socket disconnected');
     });
 
-    return () => {
-      cleanupAndLeave();
-    };
+    return () => cleanupAndLeave();
   }, [roomID]);
 
   const cleanupAndLeave = () => {
+    if (localStream) localStream.getTracks().forEach(track => track.stop());
     if (socketRef.current) {
       socketRef.current.emit('leave', roomID);
       socketRef.current.disconnect();
@@ -140,31 +109,22 @@ export default function VideoCall({ roomID, onLeave }) {
       pcRef.current.close();
       pcRef.current = null;
     }
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-    }
     onLeave();
   };
 
-  const createPeerConnection = (isOfferer) => {
-    console.log('Creating RTCPeerConnection, isOfferer:', isOfferer);
+  const createPeerConnection = () => {
+    console.log('Creating RTCPeerConnection');
     setStatus('Creating peer connection...');
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     pcRef.current = pc;
 
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
-      });
-    }
-
     pc.ontrack = (event) => {
       console.log('Remote track received');
+      const [stream] = event.streams;
+      setRemoteStream(stream);
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
       setPeerConnected(true);
-      const [remoteStream] = event.streams;
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-      }
+      setPeerVideoEnabled(stream.getVideoTracks().length > 0);
       setStatus('Connected');
     };
 
@@ -176,80 +136,113 @@ export default function VideoCall({ roomID, onLeave }) {
 
     pc.oniceconnectionstatechange = () => {
       console.log('ICE connection state:', pc.iceConnectionState);
+      if (pc.iceConnectionState === 'disconnected') {
+        setPeerConnected(false);
+        setRemoteStream(null);
+        setPeerVideoEnabled(false);
+      }
     };
 
-    if (isOfferer) {
-      pc.onnegotiationneeded = async () => {
-        console.log('Starting negotiation (offer)...');
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socketRef.current.emit('offer', { offer: pc.localDescription, roomID });
-          console.log('Offer sent');
-        } catch (err) {
-          console.error('Error during negotiation (offer):', err);
-        }
-      };
+    if (localStream) {
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
     }
   };
 
-  const handleToggleAudio = () => {
-    if (!localStreamRef.current) return;
-    const newEnabled = !localAudioEnabled;
-    localStreamRef.current.getAudioTracks().forEach((track) => {
-      track.enabled = newEnabled;
-    });
-    setLocalAudioEnabled(newEnabled);
-    if (socketRef.current) {
-      socketRef.current.emit('toggle-audio', { enabled: newEnabled, roomID });
+  const renegotiate = async () => {
+    if (!pcRef.current) return;
+    try {
+      const offer = await pcRef.current.createOffer();
+      await pcRef.current.setLocalDescription(offer);
+      socketRef.current.emit('offer', { offer: pcRef.current.localDescription, roomID });
+      console.log('Renegotiation offer sent');
+    } catch (err) {
+      console.error('Error during renegotiation:', err);
     }
   };
 
-  const handleToggleVideo = () => {
-    if (!localStreamRef.current) return;
-    const newEnabled = !localVideoEnabled;
-    localStreamRef.current.getVideoTracks().forEach((track) => {
-      track.enabled = newEnabled;
-    });
-    setLocalVideoEnabled(newEnabled);
-    if (socketRef.current) {
-      socketRef.current.emit('toggle-video', { enabled: newEnabled, roomID });
+  const startMedia = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      setLocalVideoEnabled(true);
+      setLocalAudioEnabled(true);
+      if (pcRef.current) {
+        stream.getTracks().forEach(track => pcRef.current.addTrack(track, stream));
+        await renegotiate();
+      }
+    } catch (err) {
+      console.error('Error accessing media devices:', err);
+      alert('Could not access camera or microphone. Please check permissions.');
+    }
+  };
+
+  const toggleVideo = async () => {
+    if (!localStream) {
+      await startMedia();
+    } else {
+      const videoTrack = localStream.getVideoTracks()[0];
+      videoTrack.enabled = !videoTrack.enabled;
+      setLocalVideoEnabled(videoTrack.enabled);
+      if (pcRef.current) await renegotiate();
+    }
+  };
+
+  const toggleAudio = () => {
+    if (localStream) {
+      const audioTrack = localStream.getAudioTracks()[0];
+      audioTrack.enabled = !audioTrack.enabled;
+      setLocalAudioEnabled(audioTrack.enabled);
     }
   };
 
   return (
     <div className="h-screen flex flex-col bg-gray-900 text-white">
       <div className="flex-grow relative">
-        {/* Main video (User 01 - Remote) */}
-        <video
-          ref={remoteVideoRef}
-          autoPlay
-          playsInline
-          className="w-full h-full object-cover bg-black"
-        />
-        {/* Overlay video (User 02 - Local) */}
-        <div className="absolute bottom-4 right-4 w-32 h-32 bg-black rounded overflow-hidden">
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover"
-          />
+        {/* Remote Video */}
+        <div className="relative w-full h-full">
+          {peerConnected && remoteStream && peerVideoEnabled ? (
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-teal-800">
+              <p className="text-white text-lg">User 2 camera is off or not connected</p>
+            </div>
+          )}
         </div>
-        {/* Navigation buttons */}
+        {/* Local Video */}
+        <div className="absolute bottom-4 right-4 w-32 h-32 bg-purple-800 rounded overflow-hidden">
+          {localStream && localVideoEnabled ? (
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <p className="text-white text-sm">User 1 camera is off</p>
+            </div>
+          )}
+        </div>
+        {/* Controls */}
         <div className="absolute bottom-4 left-4 flex space-x-2">
           <button
-            onClick={handleToggleAudio}
+            onClick={toggleAudio}
             className="p-2 bg-gray-700 rounded hover:bg-gray-600 transition"
-            title={localAudioEnabled ? "Mute audio" : "Unmute audio"}
+            title={localAudioEnabled ? 'Mute audio' : 'Unmute audio'}
           >
             {localAudioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
           </button>
           <button
-            onClick={handleToggleVideo}
+            onClick={toggleVideo}
             className="p-2 bg-gray-700 rounded hover:bg-gray-600 transition"
-            title={localVideoEnabled ? "Turn video off" : "Turn video on"}
+            title={localVideoEnabled ? 'Turn video off' : 'Turn video on'}
           >
             {localVideoEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
           </button>
@@ -261,6 +254,8 @@ export default function VideoCall({ roomID, onLeave }) {
             <PhoneOff className="w-5 h-5" />
           </button>
         </div>
+        {/* Status */}
+        <div className="absolute top-4 left-4 text-sm">{status}</div>
       </div>
     </div>
   );
