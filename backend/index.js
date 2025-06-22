@@ -94,14 +94,20 @@ io.on('connection', (socket) => {
     if (connections[path] === undefined) {
       connections[path] = [];
     }
+    // Enforce two-participant limit
+    if (connections[path].length >= 2) {
+      socket.emit('room-full');
+      return;
+    }
     connections[path].push(socket.id);
-
     timeOnline[socket.id] = new Date();
 
+    // Notify all users in the room about the new participant
     for (let a = 0; a < connections[path].length; a++) {
       io.to(connections[path][a]).emit('user-joined', socket.id, connections[path]);
     }
 
+    // Send existing chat messages to the new user
     if (messages[path] !== undefined) {
       for (let a = 0; a < messages[path].length; ++a) {
         io.to(socket.id).emit(
@@ -143,6 +149,25 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Screen sharing events for presentation mode
+  socket.on('screen-sharing-started', (path) => {
+    if (connections[path] && connections[path].includes(socket.id)) {
+      const otherUsers = connections[path].filter(id => id !== socket.id);
+      otherUsers.forEach(id => {
+        io.to(id).emit('screen-sharing-started', socket.id);
+      });
+    }
+  });
+
+  socket.on('screen-sharing-stopped', (path) => {
+    if (connections[path] && connections[path].includes(socket.id)) {
+      const otherUsers = connections[path].filter(id => id !== socket.id);
+      otherUsers.forEach(id => {
+        io.to(id).emit('screen-sharing-stopped', socket.id);
+      });
+    }
+  });
+
   socket.on('disconnect', () => {
     var diffTime = Math.abs(timeOnline[socket.id] - new Date());
     var key;
@@ -152,10 +177,12 @@ io.on('connection', (socket) => {
         if (v[a] === socket.id) {
           key = k;
 
+          // Notify remaining users that a user has left
           for (let a = 0; a < connections[key].length; ++a) {
             io.to(connections[key][a]).emit('user-left', socket.id);
           }
 
+          // Remove the disconnected user
           var index = connections[key].indexOf(socket.id);
           connections[key].splice(index, 1);
 
